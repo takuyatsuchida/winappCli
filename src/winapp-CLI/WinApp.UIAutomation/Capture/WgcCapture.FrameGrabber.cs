@@ -235,8 +235,7 @@ internal static partial class WgcCapture
         // Called only under _callbackLock, including readback from the sampling thread.
         private void CopyPendingFrame()
         {
-            if (_pendingFrame is null ||
-                (_minIntervalMs > 0 && Environment.TickCount64 - _lastSampleMs < _minIntervalMs))
+            if (_pendingFrame is null)
             {
                 return;
             }
