@@ -349,6 +349,100 @@ public class WindowCaptureSessionLifecycleTests
         });
     }
 
+    [TestMethod]
+    public void Discovery_IncludesOnlyVisibleSameProcessWindowsInFrontOfTheTarget()
+    {
+        using var targetForm = new Form();
+        using var frontForm = new Form();
+        using var behindForm = new Form();
+        using var foreignForm = new Form();
+        using var hiddenForm = new Form();
+        var target = new HWND(targetForm.Handle);
+        var front = new HWND(frontForm.Handle);
+        var behind = new HWND(behindForm.Handle);
+        var foreign = new HWND(foreignForm.Handle);
+        var hidden = new HWND(hiddenForm.Handle);
+        var pid = Environment.ProcessId;
+        var zOrder = new Queue<HWND>([front, foreign, hidden, target, behind]);
+        try
+        {
+            RealOwnedWindowFinder.s_findNextTopLevelWindow = _ => zOrder.TryDequeue(out var next) ? next : HWND.Null;
+            RealOwnedWindowFinder.s_getWindowProcessId = hwnd => hwnd == foreign ? pid + 1 : pid;
+            RealOwnedWindowFinder.s_isWindowVisible = hwnd => hwnd != hidden;
+            var results = WindowCaptureSession.Discover(target, pid, NullLogger.Instance, _ => new(0, 0, 10, 10));
+            Assert.AreEqual((nint)front, results.Single().Handle);
+        }
+        finally
+        {
+            RealOwnedWindowFinder.ResetNativeSeams();
+        }
+    }
+
+    [TestMethod]
+    [DataRow("ApplicationFrameWindow")]
+    [DataRow(null)]
+    public void Discovery_KeepsOnlyOwnedPopupsForStoreAppFrameOrUnknownTargetClass(string? targetClass)
+    {
+        using var targetForm = new Form();
+        using var unownedForm = new Form();
+        using var popupForm = new PopupWindow();
+        var target = new HWND(targetForm.Handle);
+        var unowned = new HWND(unownedForm.Handle);
+        var popup = new HWND(popupForm.Handle);
+        var zOrder = new Queue<HWND>([unowned, target, popup]);
+        var getClassName = SystemUiQuery.s_getWindowClassName;
+        try
+        {
+            SystemUiQuery.s_getWindowClassName = hwnd => hwnd == (nint)target ? targetClass : null;
+            RealOwnedWindowFinder.s_findNextTopLevelWindow = _ => zOrder.TryDequeue(out var next) ? next : HWND.Null;
+            RealOwnedWindowFinder.s_getWindowOwner = hwnd => hwnd == popup ? target : HWND.Null;
+            RealOwnedWindowFinder.s_isWindowVisible = _ => true;
+            var queriedUnowned = false;
+            var results = WindowCaptureSession.Discover(target, Environment.ProcessId, NullLogger.Instance, hwnd =>
+            {
+                queriedUnowned |= hwnd == unowned;
+                return new(0, 0, 10, 10);
+            });
+            Assert.IsFalse(queriedUnowned);
+            Assert.AreEqual((nint)popup, results.Single().Handle);
+        }
+        finally
+        {
+            SystemUiQuery.s_getWindowClassName = getClassName;
+            RealOwnedWindowFinder.ResetNativeSeams();
+        }
+    }
+
+    [TestMethod]
+    public void Discovery_ExcludesCloakedUnownedWindowInFrontOfTheTarget()
+    {
+        WithUnownedWindowInFront((target, unowned, pid) =>
+        {
+            Assert.HasCount(1, WindowCaptureSession.Discover(target, pid, NullLogger.Instance, _ => new(0, 0, 10, 10)));
+            var on = 1;
+            Assert.AreEqual(0, DwmSetWindowAttribute(unowned, 13 /* DWMWA_CLOAK */, ref on, sizeof(int)));
+            Assert.IsEmpty(WindowCaptureSession.Discover(target, pid, NullLogger.Instance, _ => new(0, 0, 10, 10)));
+        });
+    }
+
+    private static void WithUnownedWindowInFront(Action<HWND, HWND, int> test)
+    {
+        using var targetForm = new Form();
+        using var unownedForm = new Form();
+        var target = new HWND(targetForm.Handle);
+        var unowned = new HWND(unownedForm.Handle);
+        try
+        {
+            RealOwnedWindowFinder.s_findNextTopLevelWindow = after => after.IsNull ? unowned : after == unowned ? target : HWND.Null;
+            RealOwnedWindowFinder.s_isWindowVisible = _ => true;
+            test(target, unowned, Environment.ProcessId);
+        }
+        finally
+        {
+            RealOwnedWindowFinder.ResetNativeSeams();
+        }
+    }
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
 

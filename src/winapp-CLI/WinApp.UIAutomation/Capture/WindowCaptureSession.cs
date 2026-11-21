@@ -384,11 +384,24 @@ internal sealed partial class WindowCaptureSession : IFrameGrabber
         {
             throw new InvalidOperationException("The selected capture window has empty bounds.");
         }
+        // Store app frames share the ApplicationFrameHost process, so they only get owned popups.
+        var includeSameProcessWindows = pid != 0 &&
+            UiTargetResolver.GetWindowClassName((nint)targetWindow) is not (null or "ApplicationFrameWindow");
+        var aboveTarget = true;
         var result = new List<SecondaryWindow>();
         var window = HWND.Null;
         while (!(window = RealOwnedWindowFinder.s_findNextTopLevelWindow(window)).IsNull)
         {
-            if (window == targetWindow || !IsEligibleSecondaryWindow(window, pid) || !IsOwnedBy(window, targetWindow, pid))
+            if (window == targetWindow)
+            {
+                aboveTarget = false;
+                continue;
+            }
+            // Also include windows like Excel's VBA editor when they are in front of the target.
+            var sameProcessWindowInFront = includeSameProcessWindows && aboveTarget &&
+                IsWindowFromExpectedProcess(window, pid) && RealOwnedWindowFinder.s_isWindowVisible(window) &&
+                !IsHiddenFromScreen(window);
+            if (!sameProcessWindowInFront && (!IsEligibleSecondaryWindow(window, pid) || !IsOwnedBy(window, targetWindow, pid)))
             {
                 continue;
             }
